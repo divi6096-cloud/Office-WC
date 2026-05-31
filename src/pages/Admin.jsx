@@ -20,6 +20,34 @@ async function callAPI(endpoint) {
   return json
 }
 
+const delay = ms => new Promise(r => setTimeout(r, ms))
+
+async function processMatchScorers(matchDetail, teamByName) {
+  const goals = matchDetail.goals || []
+  if (!goals.length) return 0
+
+  const goalMap = {}
+  const playerRows = []
+
+  for (const goal of goals) {
+    if (goal.type === 'OWN' || !goal.scorer?.id) continue
+    const teamId = teamByName[goal.team?.name] || null
+    playerRows.push({ id: goal.scorer.id, name: goal.scorer.name, team_id: teamId, position: goal.scorer.position || null })
+    const key = `${goal.scorer.id}_${matchDetail.id}`
+    goalMap[key] = goalMap[key] || { player_id: goal.scorer.id, match_id: matchDetail.id, goals: 0 }
+    goalMap[key].goals += 1
+  }
+
+  const statsRows = Object.values(goalMap)
+  if (!statsRows.length) return 0
+
+  // Ensure players exist
+  if (playerRows.length) await supabase.from('players').upsert(playerRows, { onConflict: 'id' })
+  // Upsert stats
+  await supabase.from('player_stats').upsert(statsRows, { onConflict: 'player_id,match_id' })
+  return statsRows.length
+}
+
 // ── Scoring engine ─────────────────────────────────────────────────────────────
 async function calculateAllScores(settings) {
   const [
@@ -207,14 +235,15 @@ function Gameweeks() {
 
 // ── Matches ────────────────────────────────────────────────────────────────────
 function Matches() {
-  const [list, setList] = useState([]); const [pullStatus, setPullStatus] = useState(''); const [pulling, setPulling] = useState(false)
+  const [list, setList] = useState([]); const [pullStatus, setPullStatus] = useState(''); const [pulling, setPulling] = useState(false); const [pullMode, setPullMode] = useState('')
   const [editId, setEditId] = useState(null); const [editScores, setEditScores] = useState({ home_score:'', away_score:'' })
   const [stageFilter, setStageFilter] = useState('all'); const [gwFilter, setGwFilter] = useState('all')
   const load = useCallback(async () => { const { data } = await supabase.from('matches').select('*').order('gameweek').order('kickoff'); setList(data||[]) }, [])
   useEffect(() => { load() }, [load])
 
-  async function pullFromAPI() {
-    setPulling(true); setPullStatus('Fetching from football-data.org…')
+  // Quick sync: just match fixtures + scores (1 API call)
+  async function quickSync() {
+    setPulling(true); setPullMode('quick'); setPullStatus('Fetching fixtures and scores…')
     try {
       const data = await callAPI('competitions/WC/matches')
       const rows = (data.matches||[]).map(m => ({ id:m.id, gameweek:apiStageToGW(m.stage,m.matchday), stage:STAGE_MAP[m.stage]||m.stage?.toLowerCase()||'group', home_team:m.homeTeam?.name||'—', away_team:m.awayTeam?.name||'—', home_score:m.score?.fullTime?.home??null, away_score:m.score?.fullTime?.away??null, status:m.status||'SCHEDULED', kickoff:m.utcDate||null }))
@@ -222,6 +251,61 @@ function Matches() {
       const { error } = await supabase.from('matches').upsert(rows, { onConflict:'id' })
       if (error) throw new Error(error.message)
       await load(); setPullStatus(`✓ ${rows.length} matches synced.`)
+    } catch(e) { setPullStatus(`✗ ${e.message}`) }
+    setPulling(false)
+  }
+
+  // Full sync: matches + goalscorers + auto-calculate scores
+  async function fullSync() {
+    setPulling(true); setPullMode('full'); setPullStatus('Step 1/3 — Fetching fixtures and scores…')
+    try {
+      // 1. Sync all matches
+      const data = await callAPI('competitions/WC/matches')
+      const allMatches = data.matches || []
+      if (!allMatches.length) { setPullStatus('✗ No matches returned.'); setPulling(false); return }
+      const rows = allMatches.map(m => ({ id:m.id, gameweek:apiStageToGW(m.stage,m.matchday), stage:STAGE_MAP[m.stage]||m.stage?.toLowerCase()||'group', home_team:m.homeTeam?.name||'—', away_team:m.awayTeam?.name||'—', home_score:m.score?.fullTime?.home??null, away_score:m.score?.fullTime?.away??null, status:m.status||'SCHEDULED', kickoff:m.utcDate||null }))
+      const { error: me } = await supabase.from('matches').upsert(rows, { onConflict:'id' })
+      if (me) throw new Error(me.message)
+
+      // 2. Sync scorers for finished matches not yet processed
+      const finished = allMatches.filter(m => m.status === 'FINISHED')
+      if (finished.length > 0) {
+        const { data: existing } = await supabase.from('player_stats').select('match_id')
+        const covered = new Set((existing||[]).map(s => s.match_id))
+        const toFetch = finished.filter(m => !covered.has(m.id))
+
+        if (toFetch.length > 0) {
+          const estMins = Math.ceil(toFetch.length * 6.5 / 60)
+          setPullStatus(`Step 2/3 — Fetching scorers for ${toFetch.length} matches (~${estMins} min)…`)
+
+          // Build team name → UUID map once
+          const { data: teamsData } = await supabase.from('teams').select('id, name')
+          const teamByName = Object.fromEntries((teamsData||[]).map(t => [t.name, t.id]))
+
+          let totalGoals = 0
+          for (let i = 0; i < toFetch.length; i++) {
+            const m = toFetch[i]
+            setPullStatus(`Step 2/3 — Scorers ${i+1}/${toFetch.length}: ${m.homeTeam?.name} vs ${m.awayTeam?.name}`)
+            try {
+              const detail = await callAPI(`matches/${m.id}`)
+              totalGoals += await processMatchScorers(detail, teamByName)
+            } catch(e) { console.error('Scorer fetch failed', m.id, e) }
+            if (i < toFetch.length - 1) await delay(6500)
+          }
+          setPullStatus(`Step 2/3 — Scorers done. ${totalGoals} goal entries saved.`)
+        } else {
+          setPullStatus('Step 2/3 — All finished matches already have scorers.')
+        }
+      }
+
+      // 3. Auto-calculate scores
+      setPullStatus('Step 3/3 — Calculating leaderboard scores…')
+      const { data: settings } = await supabase.from('settings').select('*').eq('id',1).single()
+      const result = await calculateAllScores(settings)
+      if (result.error) throw new Error(result.error.message)
+
+      await load()
+      setPullStatus(`✓ Done — ${allMatches.length} matches, ${finished.length} finished, leaderboard updated.`)
     } catch(e) { setPullStatus(`✗ ${e.message}`) }
     setPulling(false)
   }
@@ -242,9 +326,22 @@ function Matches() {
   return (
     <div>
       <div style={{ ...card, padding:20 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
-          <SectionHeader title="Pull from API" sub="Syncs WC 2026 fixtures and results from football-data.org" />
-          <button onClick={pullFromAPI} disabled={pulling} style={{ ...btn(), opacity:pulling?0.6:1 }}>{pulling?'Pulling…':'⚡ Sync Matches'}</button>
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
+          <div>
+            <SectionHeader title="Sync from API" />
+            <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:C.muted, marginTop:-8, marginBottom:0 }}>
+              <strong style={{ color:'#111827' }}>Quick Sync</strong> — updates fixtures and scores only (fast, 1 call).<br/>
+              <strong style={{ color:'#111827' }}>Full Sync</strong> — also pulls goalscorers and recalculates the leaderboard automatically.
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <button onClick={quickSync} disabled={pulling} style={{ ...btn('ghost'), border:`1px solid ${C.border}`, opacity:pulling?0.6:1 }}>
+              {pulling && pullMode==='quick' ? 'Syncing…' : '↻ Quick Sync'}
+            </button>
+            <button onClick={fullSync} disabled={pulling} style={{ ...btn(), opacity:pulling?0.6:1 }}>
+              {pulling && pullMode==='full' ? 'Syncing…' : '⚡ Full Sync'}
+            </button>
+          </div>
         </div>
         <StatusMsg msg={pullStatus} />
       </div>
@@ -417,13 +514,11 @@ function Scoring() {
         {lastRun && <div style={{ marginTop:12, fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>Last run: {lastRun.toLocaleTimeString()}</div>}
       </div>
       <div style={{ ...card, padding:20 }}>
-        <SectionHeader title="How to enter player goals" />
+        <SectionHeader title="How scoring works" />
         <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:C.muted, lineHeight:1.7 }}>
-          <div>Go to <strong style={{ color:'#111827' }}>Supabase → Table Editor → player_stats</strong> and insert rows after each match:</div>
-          <div style={{ background:'#f8fafc', borderRadius:8, padding:'10px 14px', marginTop:8, fontFamily:'monospace', fontSize:12 }}>
-            player_id (bigint) | match_id (bigint) | goals (integer)
-          </div>
-          <div style={{ marginTop:8 }}>Then click <strong style={{ color:'#111827' }}>Calculate All Scores</strong> above to update the leaderboard.</div>
+          <div>Use <strong style={{ color:'#111827' }}>Full Sync</strong> on the Matches tab to pull match results, goalscorer data, and recalculate the leaderboard in one click.</div>
+          <div style={{ marginTop:8 }}>Alternatively, run <strong style={{ color:'#111827' }}>Calculate All Scores</strong> above after manually editing results in the Matches tab.</div>
+          <div style={{ marginTop:8 }}>Multipliers are configured in the <strong style={{ color:'#111827' }}>Settings</strong> tab.</div>
         </div>
       </div>
     </div>
