@@ -525,6 +525,158 @@ function Scoring() {
   )
 }
 
+// ── Admin Picks ────────────────────────────────────────────────────────────────
+function AdminPicks() {
+  const [participants, setParticipants] = useState([])
+  const [gameweeks, setGameweeks] = useState([])
+  const [players, setPlayers] = useState([])
+  const [ptRows, setPtRows] = useState([])  // participant_teams
+  const [picks, setPicks] = useState([])
+  const [settings, setSettings] = useState(null)
+  const [selectedGw, setSelectedGw] = useState(null)
+  const [editPid, setEditPid] = useState(null) // participant being edited
+  const [search, setSearch] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    (async () => {
+      const [p, g, pl, pt, s] = await Promise.all([
+        supabase.from('participants').select('id, name').order('name'),
+        supabase.from('gameweeks').select('*').order('week_number'),
+        supabase.from('players').select('id, name, team_id, teams(name)').order('name'),
+        supabase.from('participant_teams').select('participant_id, team_id, pool'),
+        supabase.from('settings').select('*').eq('id', 1).single(),
+      ])
+      setParticipants(p.data || [])
+      setGameweeks(g.data || [])
+      setPlayers(pl.data || [])
+      setPtRows(pt.data || [])
+      setSettings(s.data)
+      const curGwNum = s.data?.current_gameweek
+      const cur = (g.data || []).find(g => g.week_number === curGwNum) || (g.data || [])[0]
+      if (cur) setSelectedGw(cur.id)
+    })()
+  }, [])
+
+  const loadPicks = useCallback(async (gwId) => {
+    if (!gwId) return
+    const { data } = await supabase.from('player_picks').select('participant_id, player_id, players(id, name, team_id, teams(name))').eq('gameweek_id', gwId)
+    setPicks(data || [])
+  }, [])
+
+  useEffect(() => { loadPicks(selectedGw) }, [selectedGw, loadPicks])
+
+  function getMultiplier(participantId, playerTeamId) {
+    if (!playerTeamId || !settings) return null
+    const pt = ptRows.find(t => t.participant_id === participantId && t.team_id === playerTeamId)
+    if (!pt) return null
+    const multMap = { A: settings.team_a_multiplier, B: settings.team_b_multiplier, C: settings.team_c_multiplier }
+    return { mult: multMap[pt.pool] || 1, pool: pt.pool }
+  }
+
+  async function assignPick(participantId, player) {
+    setSaving(true)
+    const { error } = await supabase.from('player_picks').upsert(
+      { participant_id: participantId, gameweek_id: selectedGw, player_id: player.id },
+      { onConflict: 'participant_id,gameweek_id' }
+    )
+    if (!error) { await loadPicks(selectedGw); setEditPid(null); setSearch('') }
+    setSaving(false)
+  }
+
+  async function removePick(participantId) {
+    if (!confirm('Remove this pick?')) return
+    await supabase.from('player_picks').delete().eq('participant_id', participantId).eq('gameweek_id', selectedGw)
+    setPicks(picks.filter(p => p.participant_id !== participantId))
+  }
+
+  const currentGw = gameweeks.find(g => g.id === selectedGw)
+  const filteredPlayers = search.length >= 2 ? players.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 10) : []
+  const rows = participants.map(p => ({ ...p, pick: picks.find(pk => pk.participant_id === p.id) || null }))
+  const unpicked = rows.filter(r => !r.pick).length
+
+  return (
+    <div>
+      {/* Gameweek selector */}
+      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+        {gameweeks.map(gw => { const active = gw.id === selectedGw; return (
+          <button key={gw.id} onClick={() => setSelectedGw(gw.id)} style={{ padding:'8px 16px', border:`1.5px solid ${active?C.green:C.border}`, borderRadius:8, background:active?C.green:C.white, color:active?C.white:C.muted, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:14, cursor:'pointer' }}>
+            GW {gw.week_number}
+          </button>
+        )})}
+        {unpicked > 0 && <span style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:'#92400e', background:'#fef3c7', padding:'4px 12px', borderRadius:99 }}>{unpicked} not picked</span>}
+        <a href="/picks" target="_blank" style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:C.green, marginLeft:'auto', textDecoration:'none' }}>→ Public picks page ↗</a>
+      </div>
+
+      <div style={card}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:14 }}>
+          <thead><tr>
+            <th style={th}>Participant</th>
+            <th style={th}>GW{currentGw?.week_number} Pick</th>
+            <th style={th}>Multiplier</th>
+            <th style={{ ...th, textAlign:'right' }}>Actions</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const m = row.pick ? getMultiplier(row.id, row.pick.players?.team_id) : null
+              const editing = editPid === row.id
+              return (
+                <tr key={row.id} style={{ background: i % 2 ? C.stripe : C.white }}>
+                  <td style={{ ...td, fontWeight:600 }}>{row.name}</td>
+                  <td style={td}>
+                    {editing ? (
+                      <div style={{ position:'relative' }}>
+                        <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search player…" style={{ ...inp, width:220, padding:'6px 10px' }} />
+                        {filteredPlayers.length > 0 && (
+                          <div style={{ position:'absolute', top:'100%', left:0, width:280, background:C.white, border:`1px solid ${C.border}`, borderRadius:8, boxShadow:'0 4px 12px rgba(0,0,0,0.12)', zIndex:50 }}>
+                            {filteredPlayers.map(p => {
+                              const m2 = getMultiplier(row.id, p.team_id)
+                              return (
+                                <div key={p.id} onClick={() => assignPick(row.id, p)} style={{ padding:'8px 12px', cursor:'pointer', borderBottom:`1px solid ${C.stripe}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}
+                                  onMouseEnter={e => e.currentTarget.style.background=C.stripe} onMouseLeave={e => e.currentTarget.style.background=C.white}>
+                                  <div>
+                                    <div style={{ fontWeight:600, fontSize:13 }}>{p.name}</div>
+                                    <div style={{ fontSize:12, color:C.muted }}>{p.teams?.name}</div>
+                                  </div>
+                                  {m2 && <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:14, color:C.green }}>{m2.mult}×</span>}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : row.pick ? (
+                      <span>
+                        <strong>{row.pick.players?.name || '—'}</strong>
+                        <span style={{ color:C.muted, fontSize:13, marginLeft:6 }}>{row.pick.players?.teams?.name}</span>
+                      </span>
+                    ) : (
+                      <span style={{ color:C.muted, fontSize:13, fontStyle:'italic' }}>Not picked</span>
+                    )}
+                  </td>
+                  <td style={td}>
+                    {m ? <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15, color:C.green }}>{m.mult}× Pool {m.pool}</span>
+                       : <span style={{ color:C.muted, fontSize:13 }}>—</span>}
+                  </td>
+                  <td style={{ ...td, textAlign:'right' }}>
+                    <span style={{ display:'flex', gap:4, justifyContent:'flex-end' }}>
+                      {editing
+                        ? <button onClick={() => { setEditPid(null); setSearch('') }} style={{ ...btn('ghost'), padding:'4px 10px', fontSize:12 }}>Cancel</button>
+                        : <button onClick={() => { setEditPid(row.id); setSearch('') }} style={{ ...btn('ghost'), padding:'4px 10px', fontSize:12 }}>Set</button>
+                      }
+                      {row.pick && !editing && <button onClick={() => removePick(row.id)} style={{ ...btn('danger'), padding:'4px 10px', fontSize:12 }}>✕</button>}
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ── Password gate ──────────────────────────────────────────────────────────────
 function PasswordGate({ onAuth }) {
   const [pw, setPw] = useState(''); const [err, setErr] = useState(false)
@@ -550,6 +702,7 @@ const ADMIN_TABS = [
   { id:'gameweeks', label:'Gameweeks', icon:'📅' },
   { id:'matches', label:'Matches', icon:'⚽' },
   { id:'players', label:'Players', icon:'🌍' },
+  { id:'picks', label:'Picks', icon:'🎯' },
   { id:'scoring', label:'Scoring', icon:'🏆' },
   { id:'settings', label:'Settings', icon:'⚙️' },
 ]
@@ -579,7 +732,7 @@ export default function Admin() {
         </div>
       </header>
       <main style={{ maxWidth:1100, margin:'0 auto', padding:'24px 20px 48px' }}>
-        {tab==='participants'&&<Participants/>}{tab==='gameweeks'&&<Gameweeks/>}{tab==='matches'&&<Matches/>}{tab==='players'&&<Players/>}{tab==='scoring'&&<Scoring/>}{tab==='settings'&&<Settings/>}
+        {tab==='participants'&&<Participants/>}{tab==='gameweeks'&&<Gameweeks/>}{tab==='matches'&&<Matches/>}{tab==='players'&&<Players/>}{tab==='picks'&&<AdminPicks/>}{tab==='scoring'&&<Scoring/>}{tab==='settings'&&<Settings/>}
       </main>
     </div>
   )

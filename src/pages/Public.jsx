@@ -245,6 +245,7 @@ export default function Public() {
               </div>
             </div>
             <Link to="/admin" style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:'rgba(255,255,255,0.35)', textDecoration:'none' }}>Admin</Link>
+            <Link to="/picks" style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:'rgba(255,255,255,0.7)', textDecoration:'none', background:'rgba(255,255,255,0.1)', padding:'6px 14px', borderRadius:20 }}>⚽ My Pick</Link>
           </div>
           <nav style={{ display:'flex', gap:4, marginTop:20 }}>
             {TABS.map((t,i) => { const active=tab===i; return <button key={t.label} onClick={()=>setTab(i)} style={{ padding:'10px 18px', border:'none', borderRadius:'8px 8px 0 0', background:active?C.cream:'transparent', color:active?C.dark:'rgba(255,255,255,0.55)', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:'clamp(13px, 2vw, 15px)', letterSpacing:'0.06em', textTransform:'uppercase', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}><span>{t.icon}</span> {t.label}</button> })}
