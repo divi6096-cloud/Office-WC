@@ -36,31 +36,40 @@ async function calculateAllScores(settings) {
   const teamPoolMult = { A:1.0, B:Number(settings.pool_b_team_mult)||1.5, C:Number(settings.pool_c_team_mult)||2.0 }
   const stageWinPts = { group:Number(settings.points_group_win)||2, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20 }
   const qualifyPts = Number(settings.points_qualify)||3
+  const goalPts = Number(settings.points_goal ?? 1)   // flat — per goal the team scores
+  const drawPts = Number(settings.points_draw ?? 1)   // flat — per drawn match
   const upserts = []
 
   for (const p of participants||[]) {
     const myTeams = (ptRows||[]).filter(r=>r.participant_id===p.id)
-    const gwScore = Object.fromEntries((gwRows||[]).map(g=>[g.id,0]))
+    // per gameweek, broken down by pool so the leaderboard can show A / B / C subtotals
+    const gwPool = Object.fromEntries((gwRows||[]).map(g=>[g.id,{A:0,B:0,C:0}]))
     const qualifyGiven = new Set()
 
     for (const mt of myTeams) {
       const tname = mt.teams?.name; if (!tname) continue
-      const tmult = teamPoolMult[mt.pool]??1.0
+      const pool = mt.pool, tmult = teamPoolMult[pool]??1.0
       for (const m of matches||[]) {
         const isHome=m.home_team===tname, isAway=m.away_team===tname
         if (!isHome&&!isAway) continue
-        const gw = gwByWeekNum[m.gameweek]; if (!gw||gwScore[gw.id]===undefined) continue
+        const gw = gwByWeekNum[m.gameweek]; if (!gw||!gwPool[gw.id]) continue
         const myScore=isHome?m.home_score:m.away_score, oppScore=isHome?m.away_score:m.home_score
-        if (myScore>oppScore) gwScore[gw.id] += (stageWinPts[m.stage]??0)*tmult
+        if (myScore==null||oppScore==null) continue
+        let pts = 0
+        if (myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult   // win
+        else if (myScore===oppScore) pts += drawPts*tmult              // draw
+        pts += (Number(myScore)||0)*goalPts*tmult                      // goals scored, each
         if (['r16','qf','sf','final'].includes(m.stage)&&!qualifyGiven.has(mt.team_id)) {
-          gwScore[gw.id] += qualifyPts*tmult; qualifyGiven.add(mt.team_id)
+          pts += qualifyPts*tmult; qualifyGiven.add(mt.team_id)        // qualify bonus
         }
+        if (gwPool[gw.id][pool]!==undefined) gwPool[gw.id][pool] += pts
       }
     }
 
     for (const gw of gwRows||[]) {
-      const pts = +gwScore[gw.id].toFixed(2)
-      upserts.push({ participant_id:p.id, gameweek_id:gw.id, team_points:pts, total_points:pts, calculated_at:new Date().toISOString() })
+      const a=+gwPool[gw.id].A.toFixed(2), b=+gwPool[gw.id].B.toFixed(2), c=+gwPool[gw.id].C.toFixed(2)
+      const total=+(a+b+c).toFixed(2)
+      upserts.push({ participant_id:p.id, gameweek_id:gw.id, pool_a_points:a, pool_b_points:b, pool_c_points:c, team_points:total, total_points:total, calculated_at:new Date().toISOString() })
     }
   }
 
@@ -397,7 +406,7 @@ function Settings() {
         </div>
         <div style={{ ...card, padding:20 }}>
           <SH title="Scoring rules" />
-          {[['Group win','points_group_win'],['Qualify from group','points_qualify'],['R16 win','points_r16_win'],['QF win','points_qf_win'],['SF win','points_sf_win'],['Winner','points_winner']].map(([l,f])=><Field key={f} label={l} field={f} />)}
+          {[['Group win','points_group_win'],['Qualify from group','points_qualify'],['R16 win','points_r16_win'],['QF win','points_qf_win'],['SF win','points_sf_win'],['Winner','points_winner'],['Goal scored','points_goal'],['Draw','points_draw']].map(([l,f])=><Field key={f} label={l} field={f} />)}
         </div>
         <div style={{ ...card, padding:20 }}>
           <SH title="Pool multipliers" sub="Applied to all result points for teams in that pool" />

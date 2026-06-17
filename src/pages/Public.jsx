@@ -35,17 +35,19 @@ function Leaderboard() {
     if (!silent) setLoading(true); else setRefreshing(true)
     const [{ data: all }, { data: scores }] = await Promise.all([
       supabase.from('participants').select('id, name, paid'),
-      supabase.from('participant_scores').select('participant_id, team_points, total_points'),
+      supabase.from('participant_scores').select('participant_id, pool_a_points, pool_b_points, pool_c_points, total_points'),
     ])
     const map = {}
-    for (const p of all||[]) map[p.id] = { name:p.name, paid:p.paid, team_points:0, total_points:0 }
+    for (const p of all||[]) map[p.id] = { name:p.name, paid:p.paid, a:0, b:0, c:0, total:0 }
     for (const s of scores||[]) {
       if (map[s.participant_id]) {
-        map[s.participant_id].team_points  += Number(s.team_points)  || 0
-        map[s.participant_id].total_points += Number(s.total_points) || 0
+        map[s.participant_id].a     += Number(s.pool_a_points) || 0
+        map[s.participant_id].b     += Number(s.pool_b_points) || 0
+        map[s.participant_id].c     += Number(s.pool_c_points) || 0
+        map[s.participant_id].total += Number(s.total_points)  || 0
       }
     }
-    setRows(Object.values(map).sort((a,b) => b.total_points - a.total_points))
+    setRows(Object.values(map).sort((a,b) => b.total - a.total))
     setLastUpdated(new Date()); setLoading(false); setRefreshing(false)
   }, [])
 
@@ -59,6 +61,7 @@ function Leaderboard() {
   if (!rows.length) return <EmptyState icon="🏆" msg="No participants yet." />
 
   const podium = ['#e8b84b','#9ca3af','#cd7f32']
+  const poolCell = { ...S.td, textAlign:'right', color:C.muted, fontFamily:"'Barlow Condensed', sans-serif", fontSize:16 }
   return (
     <div>
       <div style={{ display:'flex', justifyContent:'flex-end', alignItems:'center', gap:8, marginBottom:10 }}>
@@ -71,8 +74,10 @@ function Leaderboard() {
           <thead><tr>
             <th style={{ ...S.th, width:52, textAlign:'center' }}>#</th>
             <th style={S.th}>Name</th>
-            <th style={S.th}>Status</th>
-            <th style={{ ...S.th, textAlign:'right' }}>Points</th>
+            <th style={{ ...S.th, textAlign:'right' }}>Pool A</th>
+            <th style={{ ...S.th, textAlign:'right' }}>Pool B</th>
+            <th style={{ ...S.th, textAlign:'right' }}>Pool C</th>
+            <th style={{ ...S.th, textAlign:'right' }}>Total</th>
           </tr></thead>
           <tbody>
             {rows.map((row,i) => (
@@ -80,10 +85,15 @@ function Leaderboard() {
                 <td style={{ ...S.td, textAlign:'center' }}>
                   <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:28, height:28, borderRadius:'50%', background:i<3?podium[i]+'22':'transparent', color:i<3?podium[i]:C.muted, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15 }}>{i+1}</span>
                 </td>
-                <td style={{ ...S.td, fontWeight:600 }}>{row.name}</td>
-                <td style={S.td}><Badge colors={row.paid?C.paid:C.free}>{row.paid?'Paid':'Free'}</Badge></td>
-                <td style={{ ...S.td, textAlign:'right', fontWeight:700, fontFamily:"'Barlow Condensed', sans-serif", fontSize:20, color:i===0&&row.total_points>0?C.goldDim:'#111827' }}>
-                  {row.total_points.toFixed(1)}
+                <td style={{ ...S.td, fontWeight:600 }}>
+                  {row.name}
+                  <span style={{ marginLeft:8, verticalAlign:'middle' }}><Badge colors={row.paid?C.paid:C.free}>{row.paid?'Paid':'Free'}</Badge></span>
+                </td>
+                <td style={poolCell}>{row.a.toFixed(1)}</td>
+                <td style={poolCell}>{row.b.toFixed(1)}</td>
+                <td style={poolCell}>{row.c.toFixed(1)}</td>
+                <td style={{ ...S.td, textAlign:'right', fontWeight:700, fontFamily:"'Barlow Condensed', sans-serif", fontSize:20, color:i===0&&row.total>0?C.goldDim:'#111827' }}>
+                  {row.total.toFixed(1)}
                 </td>
               </tr>
             ))}
