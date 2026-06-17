@@ -9,8 +9,8 @@ const C = {
   poolA:{bg:'#fef3c7',text:'#92400e'}, poolB:{bg:'#dbeafe',text:'#1e40af'}, poolC:{bg:'#dcfce7',text:'#166534'},
 }
 const S = {
-  card:{background:C.white,borderRadius:12,boxShadow:'0 1px 3px rgba(0,0,0,0.08)',overflow:'hidden'},
-  table:{width:'100%',borderCollapse:'collapse',fontSize:14},
+  card:{background:C.white,borderRadius:12,boxShadow:'0 1px 3px rgba(0,0,0,0.08)',overflowX:'auto',WebkitOverflowScrolling:'touch'},
+  table:{width:'100%',minWidth:480,borderCollapse:'collapse',fontSize:14},
   th:{padding:'10px 16px',textAlign:'left',background:'#f8fafc',color:C.muted,fontFamily:"'Barlow Condensed', sans-serif",fontWeight:600,fontSize:13,letterSpacing:'0.06em',textTransform:'uppercase',borderBottom:`2px solid ${C.border}`},
   td:{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,verticalAlign:'middle',color:'#111827',fontFamily:"'Outfit', sans-serif"},
   badge:{display:'inline-block',padding:'3px 10px',borderRadius:99,fontSize:12,fontWeight:600,fontFamily:"'Outfit', sans-serif"},
@@ -265,6 +265,11 @@ export default function Public() {
     const link = document.createElement('link'); link.rel='stylesheet'
     link.href='https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Outfit:wght@400;500;600&display=swap'
     document.head.appendChild(link); document.body.style.margin='0'; document.body.style.background=C.cream
+    if (!document.querySelector('meta[name="viewport"]')) {
+      const vp = document.createElement('meta'); vp.name='viewport'
+      vp.content='width=device-width, initial-scale=1'
+      document.head.appendChild(vp)
+    }
   }, [])
   return (
     <div style={{ minHeight:'100vh', background:C.cream }}>
@@ -280,8 +285,8 @@ export default function Public() {
             </div>
             <Link to="/admin" style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:'rgba(255,255,255,0.35)', textDecoration:'none' }}>Admin</Link>
           </div>
-          <nav style={{ display:'flex', gap:4, marginTop:20 }}>
-            {TABS.map((t,i) => { const active=tab===i; return <button key={t.label} onClick={()=>setTab(i)} style={{ padding:'10px 18px', border:'none', borderRadius:'8px 8px 0 0', background:active?C.cream:'transparent', color:active?C.dark:'rgba(255,255,255,0.55)', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:'clamp(13px,2vw,15px)', letterSpacing:'0.06em', textTransform:'uppercase', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}><span>{t.icon}</span> {t.label}</button> })}
+          <nav style={{ display:'flex', gap:4, marginTop:20, overflowX:'auto', flexWrap:'nowrap', scrollbarWidth:'none' }}>
+            {TABS.map((t,i) => { const active=tab===i; return <button key={t.label} onClick={()=>setTab(i)} style={{ padding:'10px 18px', border:'none', borderRadius:'8px 8px 0 0', background:active?C.cream:'transparent', color:active?C.dark:'rgba(255,255,255,0.55)', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:'clamp(13px,2vw,15px)', letterSpacing:'0.06em', textTransform:'uppercase', cursor:'pointer', display:'flex', alignItems:'center', gap:6, whiteSpace:'nowrap', flexShrink:0 }}><span>{t.icon}</span> {t.label}</button> })}
           </nav>
         </div>
       </header>
