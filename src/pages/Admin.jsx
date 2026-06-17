@@ -13,7 +13,7 @@ function apiStageToGW(stage, matchday) {
   return { LAST_16:4, ROUND_OF_16:4, QUARTER_FINALS:5, SEMI_FINALS:6, FINAL:7, '3RD_PLACE_MATCH':7 }[stage]??8
 }
 async function callAPI(endpoint) {
-  const res = await fetch(`/.netlify/functions/football-api?endpoint=${encodeURIComponent(endpoint)}`)
+  const res = await fetch(`/football-api?endpoint=${encodeURIComponent(endpoint)}`)
   const json = await res.json()
   if (!res.ok) throw new Error(json.error||`HTTP ${res.status}`)
   return json
@@ -200,20 +200,40 @@ function Matches() {
   }
 
   async function fullSync() {
-    setPulling(true); setPullMode('full'); setPullStatus('Step 1/2 — Syncing fixtures…')
+    setPulling(true); setPullMode('full'); setPullStatus('Step 1/3 — Syncing fixtures…')
     try {
       const data = await callAPI('competitions/WC/matches?season=2026')
       const allMatches = data.matches||[]
       if (!allMatches.length) { setPullStatus('✗ No matches returned.'); setPulling(false); return }
       const { error:me } = await supabase.from('matches').upsert(buildRows(allMatches),{onConflict:'id'})
       if (me) throw new Error(me.message)
-      setPullStatus('Step 2/2 — Calculating scores…')
+
+      // Step 2 — goalscorers (display only). Uses the free /scorers endpoint, which returns
+      // cumulative tournament goals per player. Non-fatal: stays empty until games are played.
+      setPullStatus('Step 2/3 — Updating goalscorers…')
+      let scorerCount = 0
+      try {
+        const sc = await callAPI('competitions/WC/scorers?season=2026&limit=100')
+        const scorers = (sc.scorers||[]).map(s=>({
+          api_id: s.player?.id,
+          name: s.player?.name||'—',
+          team_name: s.team?.name||'—',
+          goals: s.goals??0,
+          updated_at: new Date().toISOString(),
+        })).filter(s=>s.api_id)
+        if (scorers.length) {
+          const { error:se } = await supabase.from('goalscorers').upsert(scorers,{onConflict:'api_id'})
+          if (!se) scorerCount = scorers.length
+        }
+      } catch(_) { /* scorers may be empty before kickoff — non-fatal */ }
+
+      setPullStatus('Step 3/3 — Calculating scores…')
       const { data: settings } = await supabase.from('settings').select('*').eq('id',1).single()
       const result = await calculateAllScores(settings)
       if (result.error) throw new Error(result.error.message)
       await load()
       const finished = allMatches.filter(m=>m.status==='FINISHED').length
-      setPullStatus(`✓ Done — ${allMatches.length} matches (${finished} finished), leaderboard updated.`)
+      setPullStatus(`✓ Done — ${allMatches.length} matches (${finished} finished), ${scorerCount} scorers, leaderboard updated.`)
     } catch(e) { setPullStatus(`✗ ${e.message}`) }
     setPulling(false)
   }

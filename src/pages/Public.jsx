@@ -22,6 +22,9 @@ function Spinner() { return <div style={S.empty}>Loading…</div> }
 
 const REFRESH_MS = 30000
 
+const STAGE_ORDER = ['group','r16','qf','sf','final']
+const STAGE_LABEL = { group:'Group Stage', r16:'Round of 16', qf:'Quarter-finals', sf:'Semi-finals', final:'Final' }
+
 function Leaderboard() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -136,7 +139,115 @@ function TeamOwnership() {
   )
 }
 
-const TABS = [{ label:'Leaderboard', icon:'🏆' }, { label:'Team Ownership', icon:'🌍' }]
+function Fixtures() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [filter, setFilter] = useState('all') // all | results | upcoming
+
+  const load = useCallback(async (silent=false) => {
+    if (!silent) setLoading(true); else setRefreshing(true)
+    const { data } = await supabase.from('matches').select('*').order('kickoff')
+    setRows(data||[]); setLoading(false); setRefreshing(false)
+  }, [])
+
+  useEffect(() => {
+    load()
+    const t = setInterval(() => load(true), REFRESH_MS)
+    return () => clearInterval(t)
+  }, [load])
+
+  if (loading) return <Spinner />
+  if (!rows.length) return <EmptyState icon="📅" msg="No fixtures yet." />
+
+  const isDone = m => m.status==='FINISHED' || m.home_score!=null
+  const filtered = rows.filter(m => filter==='all' ? true : filter==='results' ? isDone(m) : !isDone(m))
+  const byStage = {}
+  for (const m of filtered) { const s=m.stage||'group'; (byStage[s]=byStage[s]||[]).push(m) }
+  const fmt = d => d ? new Date(d).toLocaleString('en-ZA',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : 'TBD'
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, flexWrap:'wrap', gap:8 }}>
+        <div style={{ display:'flex', gap:4 }}>
+          {[['all','All'],['results','Results'],['upcoming','Upcoming']].map(([k,label]) => (
+            <button key={k} onClick={()=>setFilter(k)} style={{ padding:'5px 14px', borderRadius:6, border:`1px solid ${C.border}`, background:filter===k?C.dark:C.white, color:filter===k?C.white:C.muted, fontFamily:"'Outfit', sans-serif", fontSize:13, fontWeight:600, cursor:'pointer' }}>{label}</button>
+          ))}
+        </div>
+        {refreshing && <span style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.gold }}>Updating…</span>}
+      </div>
+      {STAGE_ORDER.filter(s=>byStage[s]?.length).map(stage => (
+        <div key={stage} style={{ marginBottom:20 }}>
+          <div style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15, textTransform:'uppercase', letterSpacing:'0.06em', color:C.muted, margin:'4px 4px 8px' }}>{STAGE_LABEL[stage]||stage}</div>
+          <div style={S.card}>
+            <table style={S.table}>
+              <tbody>
+                {byStage[stage].map((m,i) => {
+                  const done=isDone(m)
+                  const homeWin=done&&m.home_score>m.away_score, awayWin=done&&m.away_score>m.home_score
+                  return (
+                    <tr key={m.id} style={{ background:i%2?C.stripe:C.white }}>
+                      <td style={{ ...S.td, color:C.muted, fontSize:12, width:118, whiteSpace:'nowrap' }}>{fmt(m.kickoff)}</td>
+                      <td style={{ ...S.td, textAlign:'right', fontWeight:homeWin?700:500 }}>{m.home_team}</td>
+                      <td style={{ ...S.td, textAlign:'center', width:64, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:16, color:done?'#111827':C.muted }}>{done?`${m.home_score} – ${m.away_score}`:'v'}</td>
+                      <td style={{ ...S.td, fontWeight:awayWin?700:500 }}>{m.away_team}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function Goalscorers() {
+  const [rows, setRows] = useState([]); const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('goalscorers').select('name, team_name, goals').order('goals',{ascending:false})
+      setRows((data||[]).filter(r=>Number(r.goals)>0))
+      setLoading(false)
+    })()
+  }, [])
+  if (loading) return <Spinner />
+  if (!rows.length) return <EmptyState icon="👟" msg="No goals yet — check back once matches kick off." />
+
+  const podium = ['#e8b84b','#9ca3af','#cd7f32']
+  return (
+    <div style={S.card}>
+      <table style={S.table}>
+        <thead><tr>
+          <th style={{ ...S.th, width:52, textAlign:'center' }}>#</th>
+          <th style={S.th}>Player</th>
+          <th style={S.th}>Team</th>
+          <th style={{ ...S.th, textAlign:'right' }}>Goals</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((row,i) => (
+            <tr key={row.name+i} style={{ background:i%2?C.stripe:C.white }}>
+              <td style={{ ...S.td, textAlign:'center' }}>
+                <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:28, height:28, borderRadius:'50%', background:i<3?podium[i]+'22':'transparent', color:i<3?podium[i]:C.muted, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15 }}>{i+1}</span>
+              </td>
+              <td style={{ ...S.td, fontWeight:600 }}>{row.name}</td>
+              <td style={{ ...S.td, color:C.muted }}>{row.team_name}</td>
+              <td style={{ ...S.td, textAlign:'right', fontWeight:700, fontFamily:"'Barlow Condensed', sans-serif", fontSize:20 }}>{row.goals}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+const TABS = [
+  { label:'Leaderboard', icon:'🏆' },
+  { label:'Fixtures', icon:'📅' },
+  { label:'Goalscorers', icon:'👟' },
+  { label:'Team Ownership', icon:'🌍' },
+]
 
 export default function Public() {
   const [tab, setTab] = useState(0)
@@ -165,7 +276,7 @@ export default function Public() {
         </div>
       </header>
       <main style={{ maxWidth:960, margin:'0 auto', padding:'24px 20px 48px' }}>
-        {tab===0&&<Leaderboard/>}{tab===1&&<TeamOwnership/>}
+        {tab===0&&<Leaderboard/>}{tab===1&&<Fixtures/>}{tab===2&&<Goalscorers/>}{tab===3&&<TeamOwnership/>}
       </main>
     </div>
   )
