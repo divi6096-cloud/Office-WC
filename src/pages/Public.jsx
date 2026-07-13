@@ -22,12 +22,19 @@ function Spinner() { return <div style={S.empty}>Loading…</div> }
 
 const REFRESH_MS = 30000
 
-const STAGE_ORDER = ['group','r16','qf','sf','final']
-const STAGE_LABEL = { group:'Group Stage', r16:'Round of 16', qf:'Quarter-finals', sf:'Semi-finals', final:'Final' }
-const STAGE_MAP = { GROUP_STAGE:'group', LAST_16:'r16', ROUND_OF_16:'r16', QUARTER_FINALS:'qf', SEMI_FINALS:'sf', FINAL:'final', '3RD_PLACE_MATCH':'final' }
+const STAGE_ORDER = ['group','r32','r16','qf','sf','final']
+const STAGE_LABEL = { group:'Group Stage', r32:'Round of 32', r16:'Round of 16', qf:'Quarter-finals', sf:'Semi-finals', final:'Final' }
+const STAGE_MAP = { GROUP_STAGE:'group', LAST_32:'r32', ROUND_OF_32:'r32', R32:'r32', LAST_16:'r16', ROUND_OF_16:'r16', QUARTER_FINALS:'qf', SEMI_FINALS:'sf', FINAL:'final', '3RD_PLACE_MATCH':'final' }
+function score120(sc) {
+  if (!sc) return { home:null, away:null, pens:false }
+  const ft=sc.fullTime||{}, pen=sc.penalties||{}, reg=sc.regularTime||{}, et=sc.extraTime||{}
+  const pens = pen.home!=null && pen.away!=null
+  if (reg.home!=null && reg.away!=null) return { home:(reg.home||0)+(et.home||0), away:(reg.away||0)+(et.away||0), pens }
+  return { home:ft.home??null, away:ft.away??null, pens }
+}
 function apiStageToGW(stage, matchday) {
   if (stage==='GROUP_STAGE') return matchday||1
-  return { LAST_16:4, ROUND_OF_16:4, QUARTER_FINALS:5, SEMI_FINALS:6, FINAL:7, '3RD_PLACE_MATCH':7 }[stage] ?? 4
+  return { LAST_32:4, ROUND_OF_32:4, R32:4, LAST_16:5, ROUND_OF_16:5, QUARTER_FINALS:6, SEMI_FINALS:7, FINAL:8, '3RD_PLACE_MATCH':8 }[stage] ?? 9
 }
 async function callAPI(endpoint) {
   const res = await fetch(`/football-api?endpoint=${encodeURIComponent(endpoint)}`)
@@ -46,7 +53,7 @@ async function calculateAllScores(settings) {
   ])
   const gwByWeekNum = Object.fromEntries((gwRows||[]).map(g=>[g.week_number,g]))
   const teamPoolMult = { A:1.0, B:Number(settings.pool_b_team_mult)||1.5, C:Number(settings.pool_c_team_mult)||2.0 }
-  const stageWinPts = { group:Number(settings.points_group_win)||2, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20 }
+  const stageWinPts = { group:Number(settings.points_group_win)||2, r32:Number(settings.points_r32_win)||3, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20 }
   const qualifyPts = Number(settings.points_qualify)||3
   const goalPts = Number(settings.points_goal ?? 1)
   const drawPts = Number(settings.points_draw ?? 1)
@@ -64,9 +71,10 @@ async function calculateAllScores(settings) {
         const gw = gwByWeekNum[m.gameweek]; if (!gw||!gwPool[gw.id]) continue
         const myScore=isHome?m.home_score:m.away_score, oppScore=isHome?m.away_score:m.home_score
         if (myScore==null||oppScore==null) continue
+        const wentToPens = m.went_to_penalties === true
         let pts = 0
-        if (myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult
-        else if (myScore===oppScore) pts += drawPts*tmult
+        if (!wentToPens && myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult
+        else if (wentToPens || myScore===oppScore) pts += drawPts*tmult
         pts += (Number(myScore)||0)*goalPts*tmult
         if (['r16','qf','sf','final'].includes(m.stage)&&!qualifyGiven.has(mt.team_id)) {
           pts += qualifyPts*tmult; qualifyGiven.add(mt.team_id)
@@ -85,7 +93,7 @@ async function calculateAllScores(settings) {
 }
 
 function buildRows(matches) {
-  return (matches||[]).map(m=>({ id:m.id, gameweek:apiStageToGW(m.stage,m.matchday), stage:STAGE_MAP[m.stage]||m.stage?.toLowerCase()||'group', home_team:m.homeTeam?.name||'—', away_team:m.awayTeam?.name||'—', home_score:m.score?.fullTime?.home??null, away_score:m.score?.fullTime?.away??null, status:m.status||'SCHEDULED', kickoff:m.utcDate||null }))
+  return (matches||[]).map(m=>{ const s=score120(m.score); return ({ id:m.id, gameweek:apiStageToGW(m.stage,m.matchday), stage:STAGE_MAP[m.stage]||m.stage?.toLowerCase()||'group', home_team:m.homeTeam?.name||'—', away_team:m.awayTeam?.name||'—', home_score:s.home, away_score:s.away, went_to_penalties:s.pens, status:m.status||'SCHEDULED', kickoff:m.utcDate||null }) })
 }
 
 // Throttled public sync: matches + goalscorers + calculate, with shared cooldown
@@ -246,6 +254,7 @@ function ScoringFAQ() {
           <h4 style={faqH}>Points your teams earn — per match</h4>
           {row('Group-stage win', `${v('points_group_win',2)} pts`)}
           {row('Qualify from group (bonus)', `${v('points_qualify',3)} pts`)}
+          {row('Round of 32 win', `${v('points_r32_win',3)} pts`)}
           {row('Round of 16 win', `${v('points_r16_win',5)} pts`)}
           {row('Quarter-final win', `${v('points_qf_win',8)} pts`)}
           {row('Semi-final win', `${v('points_sf_win',13)} pts`)}

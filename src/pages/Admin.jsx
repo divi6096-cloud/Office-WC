@@ -5,12 +5,25 @@ import { supabase } from '../lib/supabase'
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'office2026'
 
 const STAGE_MAP = {
-  GROUP_STAGE:'group', LAST_16:'r16', ROUND_OF_16:'r16',
+  GROUP_STAGE:'group',
+  LAST_32:'r32', ROUND_OF_32:'r32', R32:'r32',
+  LAST_16:'r16', ROUND_OF_16:'r16',
   QUARTER_FINALS:'qf', SEMI_FINALS:'sf', FINAL:'final', '3RD_PLACE_MATCH':'final',
 }
 function apiStageToGW(stage, matchday) {
   if (stage==='GROUP_STAGE') return matchday||1
-  return { LAST_16:4, ROUND_OF_16:4, QUARTER_FINALS:5, SEMI_FINALS:6, FINAL:7, '3RD_PLACE_MATCH':7 }[stage]??8
+  return { LAST_32:4, ROUND_OF_32:4, R32:4, LAST_16:5, ROUND_OF_16:5, QUARTER_FINALS:6, SEMI_FINALS:7, FINAL:8, '3RD_PLACE_MATCH':8 }[stage]??9
+}
+// Score at the end of 120 minutes (regulation + extra time), EXCLUDING any penalty shootout.
+// football-data.org keeps the shootout separately in score.penalties, so score.fullTime is
+// already the 120-min score; we prefer regularTime+extraTime when the feed splits them, and
+// flag whether the tie went to penalties.
+function score120(sc) {
+  if (!sc) return { home:null, away:null, pens:false }
+  const ft=sc.fullTime||{}, pen=sc.penalties||{}, reg=sc.regularTime||{}, et=sc.extraTime||{}
+  const pens = pen.home!=null && pen.away!=null
+  if (reg.home!=null && reg.away!=null) return { home:(reg.home||0)+(et.home||0), away:(reg.away||0)+(et.away||0), pens }
+  return { home:ft.home??null, away:ft.away??null, pens }
 }
 async function callAPI(endpoint) {
   const res = await fetch(`/football-api?endpoint=${encodeURIComponent(endpoint)}`)
@@ -34,7 +47,7 @@ async function calculateAllScores(settings) {
 
   const gwByWeekNum = Object.fromEntries((gwRows||[]).map(g=>[g.week_number,g]))
   const teamPoolMult = { A:1.0, B:Number(settings.pool_b_team_mult)||1.5, C:Number(settings.pool_c_team_mult)||2.0 }
-  const stageWinPts = { group:Number(settings.points_group_win)||2, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20 }
+  const stageWinPts = { group:Number(settings.points_group_win)||2, r32:Number(settings.points_r32_win)||3, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20 }
   const qualifyPts = Number(settings.points_qualify)||3
   const goalPts = Number(settings.points_goal ?? 1)   // flat — per goal the team scores
   const drawPts = Number(settings.points_draw ?? 1)   // flat — per drawn match
@@ -55,10 +68,13 @@ async function calculateAllScores(settings) {
         const gw = gwByWeekNum[m.gameweek]; if (!gw||!gwPool[gw.id]) continue
         const myScore=isHome?m.home_score:m.away_score, oppScore=isHome?m.away_score:m.home_score
         if (myScore==null||oppScore==null) continue
+        // A tie decided on penalties counts as a DRAW: no stage-win points, and only the
+        // 120-minute goals count (shootout goals are excluded at sync time).
+        const wentToPens = m.went_to_penalties === true
         let pts = 0
-        if (myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult   // win
-        else if (myScore===oppScore) pts += drawPts*tmult              // draw
-        pts += (Number(myScore)||0)*goalPts*tmult                      // goals scored, each
+        if (!wentToPens && myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult   // win
+        else if (wentToPens || myScore===oppScore) pts += drawPts*tmult               // draw (incl. pens)
+        pts += (Number(myScore)||0)*goalPts*tmult                      // goals scored, each (120-min)
         if (['r16','qf','sf','final'].includes(m.stage)&&!qualifyGiven.has(mt.team_id)) {
           pts += qualifyPts*tmult; qualifyGiven.add(mt.team_id)        // qualify bonus
         }
@@ -101,7 +117,15 @@ function Participants() {
   const load = useCallback(async () => { const { data } = await supabase.from('participants').select('*').order('created_at'); setList(data||[]); setLoading(false) }, [])
   useEffect(()=>{ load() },[load])
   async function add() { if (!name.trim()) return; setSaving(true); await supabase.from('participants').insert({ name:name.trim(), paid }); setName(''); setPaid(true); await load(); setSaving(false) }
-  async function togglePaid(id,cur) { await supabase.from('participants').update({ paid:!cur }).eq('id',id); setList(l=>l.map(p=>p.id===id?{...p,paid:!cur}:p)) }
+  async function togglePaid(id,cur) {
+    const { data, error } = await supabase.from('participants').update({ paid:!cur }).eq('id',id).select()
+    if (error) { alert(`Couldn't update paid status: ${error.message}`); return }
+    if (!data || data.length === 0) {
+      alert('Update was blocked (no row changed). This is usually Row Level Security preventing writes with the public key.')
+      return
+    }
+    setList(l=>l.map(p=>p.id===id?{...p,paid:!cur}:p))
+  }
   async function remove(id) { if (!confirm('Delete?')) return; await supabase.from('participants').delete().eq('id',id); setList(l=>l.filter(p=>p.id!==id)) }
   const paidCount = list.filter(p=>p.paid).length
   return (
@@ -192,7 +216,7 @@ function Matches() {
   useEffect(()=>{ load() },[load])
 
   function buildRows(matches) {
-    return (matches||[]).map(m=>({ id:m.id, gameweek:apiStageToGW(m.stage,m.matchday), stage:STAGE_MAP[m.stage]||m.stage?.toLowerCase()||'group', home_team:m.homeTeam?.name||'—', away_team:m.awayTeam?.name||'—', home_score:m.score?.fullTime?.home??null, away_score:m.score?.fullTime?.away??null, status:m.status||'SCHEDULED', kickoff:m.utcDate||null }))
+    return (matches||[]).map(m=>{ const s=score120(m.score); return ({ id:m.id, gameweek:apiStageToGW(m.stage,m.matchday), stage:STAGE_MAP[m.stage]||m.stage?.toLowerCase()||'group', home_team:m.homeTeam?.name||'—', away_team:m.awayTeam?.name||'—', home_score:s.home, away_score:s.away, went_to_penalties:s.pens, status:m.status||'SCHEDULED', kickoff:m.utcDate||null }) })
   }
 
   async function quickSync() {
@@ -406,7 +430,7 @@ function Settings() {
         </div>
         <div style={{ ...card, padding:20 }}>
           <SH title="Scoring rules" />
-          {[['Group win','points_group_win'],['Qualify from group','points_qualify'],['R16 win','points_r16_win'],['QF win','points_qf_win'],['SF win','points_sf_win'],['Winner','points_winner'],['Goal scored','points_goal'],['Draw','points_draw']].map(([l,f])=><Field key={f} label={l} field={f} />)}
+          {[['Group win','points_group_win'],['Qualify from group','points_qualify'],['R32 win','points_r32_win'],['R16 win','points_r16_win'],['QF win','points_qf_win'],['SF win','points_sf_win'],['Winner','points_winner'],['Goal scored','points_goal'],['Draw','points_draw']].map(([l,f])=><Field key={f} label={l} field={f} />)}
         </div>
         <div style={{ ...card, padding:20 }}>
           <SH title="Pool multipliers" sub="Applied to all result points for teams in that pool" />
