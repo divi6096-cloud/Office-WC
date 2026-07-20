@@ -48,6 +48,7 @@ async function calculateAllScores(settings) {
   const gwByWeekNum = Object.fromEntries((gwRows||[]).map(g=>[g.week_number,g]))
   const teamPoolMult = { A:1.0, B:Number(settings.pool_b_team_mult)||1.5, C:Number(settings.pool_c_team_mult)||2.0 }
   const stageWinPts = { group:Number(settings.points_group_win)||2, r32:Number(settings.points_r32_win)||3, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20, third:Number(settings.points_third)||3 }
+  const qualifyPts = Number(settings.points_qualify)||3   // one-off bonus for reaching the knockouts
   const goalPts = Number(settings.points_goal ?? 1)   // flat — per goal the team scores
   const drawPts = Number(settings.points_draw ?? 1)   // flat — per drawn match
   const upserts = []
@@ -56,6 +57,7 @@ async function calculateAllScores(settings) {
     const myTeams = (ptRows||[]).filter(r=>r.participant_id===p.id)
     // per gameweek, broken down by pool so the leaderboard can show A / B / C subtotals
     const gwPool = Object.fromEntries((gwRows||[]).map(g=>[g.id,{A:0,B:0,C:0}]))
+    const qualifyGiven = new Set()   // one qualify bonus per team, on their first knockout match
 
     for (const mt of myTeams) {
       const tname = mt.teams?.name; if (!tname) continue
@@ -73,6 +75,11 @@ async function calculateAllScores(settings) {
         if (!wentToPens && myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult   // win
         else if (wentToPens || myScore===oppScore) pts += drawPts*tmult               // draw (incl. pens)
         pts += (Number(myScore)||0)*goalPts*tmult                      // goals scored, each (120-min)
+        // Qualify-from-group bonus: awarded once when a team reaches the knockouts.
+        // Reaching R32 is qualification, so any knockout stage triggers it (once per team).
+        if (['r32','r16','qf','sf','final','third'].includes(m.stage) && !qualifyGiven.has(mt.team_id)) {
+          pts += qualifyPts*tmult; qualifyGiven.add(mt.team_id)
+        }
         if (gwPool[gw.id][pool]!==undefined) gwPool[gw.id][pool] += pts
       }
     }
@@ -425,7 +432,7 @@ function Settings() {
         </div>
         <div style={{ ...card, padding:20 }}>
           <SH title="Scoring rules" />
-          {[['Group win','points_group_win'],['R32 win','points_r32_win'],['R16 win','points_r16_win'],['QF win','points_qf_win'],['SF win','points_sf_win'],['Final win','points_winner'],['3rd place win','points_third'],['Goal scored','points_goal'],['Draw','points_draw']].map(([l,f])=><Field key={f} label={l} field={f} />)}
+          {[['Group win','points_group_win'],['Qualify from group','points_qualify'],['R32 win','points_r32_win'],['R16 win','points_r16_win'],['QF win','points_qf_win'],['SF win','points_sf_win'],['Final win','points_winner'],['3rd place win','points_third'],['Goal scored','points_goal'],['Draw','points_draw']].map(([l,f])=><Field key={f} label={l} field={f} />)}
         </div>
         <div style={{ ...card, padding:20 }}>
           <SH title="Pool multipliers" sub="Applied to all result points for teams in that pool" />
