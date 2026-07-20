@@ -24,7 +24,7 @@ const REFRESH_MS = 30000
 
 const STAGE_ORDER = ['group','r32','r16','qf','sf','final']
 const STAGE_LABEL = { group:'Group Stage', r32:'Round of 32', r16:'Round of 16', qf:'Quarter-finals', sf:'Semi-finals', final:'Final' }
-const STAGE_MAP = { GROUP_STAGE:'group', LAST_32:'r32', ROUND_OF_32:'r32', R32:'r32', LAST_16:'r16', ROUND_OF_16:'r16', QUARTER_FINALS:'qf', SEMI_FINALS:'sf', FINAL:'final', '3RD_PLACE_MATCH':'final' }
+const STAGE_MAP = { GROUP_STAGE:'group', LAST_32:'r32', ROUND_OF_32:'r32', R32:'r32', LAST_16:'r16', ROUND_OF_16:'r16', QUARTER_FINALS:'qf', SEMI_FINALS:'sf', FINAL:'final', '3RD_PLACE_MATCH':'third' }
 function score120(sc) {
   if (!sc) return { home:null, away:null, pens:false }
   const ft=sc.fullTime||{}, pen=sc.penalties||{}, reg=sc.regularTime||{}, et=sc.extraTime||{}
@@ -53,7 +53,7 @@ async function calculateAllScores(settings) {
   ])
   const gwByWeekNum = Object.fromEntries((gwRows||[]).map(g=>[g.week_number,g]))
   const teamPoolMult = { A:1.0, B:Number(settings.pool_b_team_mult)||1.5, C:Number(settings.pool_c_team_mult)||2.0 }
-  const stageWinPts = { group:Number(settings.points_group_win)||2, r32:Number(settings.points_r32_win)||3, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20 }
+  const stageWinPts = { group:Number(settings.points_group_win)||2, r32:Number(settings.points_r32_win)||3, r16:Number(settings.points_r16_win)||5, qf:Number(settings.points_qf_win)||8, sf:Number(settings.points_sf_win)||13, final:Number(settings.points_winner)||20, third:Number(settings.points_third)||3 }
   const qualifyPts = Number(settings.points_qualify)||3
   const goalPts = Number(settings.points_goal ?? 1)
   const drawPts = Number(settings.points_draw ?? 1)
@@ -76,7 +76,7 @@ async function calculateAllScores(settings) {
         if (!wentToPens && myScore>oppScore) pts += (stageWinPts[m.stage]??0)*tmult
         else if (wentToPens || myScore===oppScore) pts += drawPts*tmult
         pts += (Number(myScore)||0)*goalPts*tmult
-        if (['r16','qf','sf','final'].includes(m.stage)&&!qualifyGiven.has(mt.team_id)) {
+        if (['r32','r16','qf','sf','final','third'].includes(m.stage)&&!qualifyGiven.has(mt.team_id)) {
           pts += qualifyPts*tmult; qualifyGiven.add(mt.team_id)
         }
         if (gwPool[gw.id][pool]!==undefined) gwPool[gw.id][pool] += pts
